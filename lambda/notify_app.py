@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Copyright (c) 2025 <Your Name or Org>
+# Copyright (c) 2025 <shinkawa>
 # lambda/notify_app.py
 import json, os, urllib.parse, urllib.request
 from datetime import datetime
