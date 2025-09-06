@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2025 <Your Name or Org>
+ * Copyright (c) 2025 <shinkawa>
  */
 import {
   Stack, StackProps, Duration, CfnOutput,
