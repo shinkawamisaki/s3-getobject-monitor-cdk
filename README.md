@@ -1,26 +1,42 @@
-# S3 GetObject → Slack 通知（CDK）セットアップ手順
+# [CDK] S3 の GetObject を CloudTrail Data Events で検知して Slack 通知する（既存 Trail は触らない）
+
+監視したい S3 バケットで発生した GetObject を CloudTrail の Data Events で拾い、EventBridge → Lambda で整形して Slack に通知します。
+本スタックは 専用 CloudTrail を自動作成し、既存の組織/アカウント Trail には一切手を入れません。
+
+⸻
+
+できること / できないこと
+	•	✅ 対象バケットの GetObject を検知し Slack に通知
+	•	✅ IP/アクセスキー末尾/アカウントIDのマスクや 👤/🤖 絵文字を環境変数で切替
+	•	✅ 複数バケット・複数チャンネル（スタックを分けて同居）
+	•	✅ 既存の CloudTrail 設定を壊さない（専用 Trail 方式）
+	•	⛔ 既存の Trail に“追記”はしない（誤爆防止のため分離運用）
+
+ℹ️ コスト注意：CloudTrail Data Events はイベント量課金です。対象バケットは必要最小限にしてください。
+
+⸻
 
 前提
 	•	AWS CLI v2 / Node.js 18+ / AWS CDK v2（npm i -g aws-cdk）
-	•	Slack Incoming Webhook（通知先チャンネル）
+	•	Slack の Incoming Webhook（通知先チャンネル）
 	•	監視したい S3 バケットが存在
-	•	権限：CloudTrail / EventBridge / Lambda / Secrets Manager / Logs を作成できる
+	•	権限：CloudTrail / EventBridge / Lambda / Secrets Manager / CloudWatch Logs を作成できる
 
-このスタックは 専用の CloudTrail（Data Events） を作るので、既存のTrailを壊しません。
+📝 本記事では コード断片は掲載しません（コマンドと図のみ）。コードは GitHub へ。
 
 ⸻
 
 クイックスタート（コマンドだけ）
 
-zsh の人は同じ行にコメントを書かないでください（unset: #: invalid parameter name になる）。
+zsh の方は 同じ行にコメントを書かないでください（unset: #: invalid parameter name になるため）。
 
 # 1) 環境変数（必要に応じて書き換え）
 export CDK_DEFAULT_REGION=ap-northeast-1
 export APP_NAME='GetObjectMonitor-A'                  # Lambda名＝EventBridgeルール名
-export BUCKET_NAMES='your-bucket-1 your-bucket-2'     # 監視バケット（スペース/カンマ区切りOK）
-export SLACK_SECRET_NAME='slack/webhook-getobject'    # Secrets Manager の名前
+export BUCKET_NAMES='your-bucket-1 your-bucket-2'     # 監視バケット（スペース/カンマ/改行区切りOK）
+export SLACK_SECRET_NAME='slack/webhook-getobject'    # Secrets Manager のシークレット名
 
-# 2) Slack Webhook を Secrets Manager へ（初回のみ）
+# 2) Slack Webhook を Secrets Manager へ登録（初回のみ）
 aws secretsmanager create-secret \
   --name "$SLACK_SECRET_NAME" \
   --secret-string '{"url":"https://hooks.slack.com/services/XXX/YYY/ZZZ"}' \
@@ -32,14 +48,14 @@ cdk bootstrap
 # 4) デプロイ
 cdk deploy --require-approval never
 
-動作確認
+動作確認（すぐに通知を見たい）
 
-# リソース確認
+# リソースの存在確認
 aws lambda get-function --function-name "$APP_NAME" --region "$CDK_DEFAULT_REGION" --query 'Configuration.FunctionArn' --output text
 aws events describe-rule --name "$APP_NAME" --region "$CDK_DEFAULT_REGION" --query 'State' --output text
 aws cloudtrail describe-trails --region "$CDK_DEFAULT_REGION" --query "trailList[?Name=='${APP_NAME}-Trail'].Name" --output text
 
-# Lambda 単体テスト（Slack疎通）
+# Lambda 単体テスト（Slack疎通チェック）
 cat > /tmp/evt.json <<'JSON'
 {
   "version": "0",
@@ -63,18 +79,21 @@ aws lambda invoke --function-name "$APP_NAME" \
   --payload fileb:///tmp/evt.json \
   --region "$CDK_DEFAULT_REGION" /tmp/out.json >/dev/null
 
-# 本番経路テスト（実オブジェクトでGetObject）
+# 本番経路テスト（実オブジェクトで GetObject を1回起こす）
 KEY=$(aws s3api list-objects-v2 --bucket your-bucket-1 --max-items 1 \
   --query 'Contents[0].Key' --output text --region "$CDK_DEFAULT_REGION")
 aws s3api get-object --bucket your-bucket-1 --key "$KEY" /dev/null \
   --region "$CDK_DEFAULT_REGION" >/dev/null 2>&1 || true
 
+# 通知が来ない場合の直近ログ
+aws logs tail /aws/lambda/$APP_NAME --region "$CDK_DEFAULT_REGION" --since 10m
+
 
 ⸻
 
-カスタマイズ（Lambda 環境変数で切替）
+カスタマイズ（Lambda の環境変数で出し分け）
 
-デプロイ済みでも update-function-configuration で変更できます。
+デプロイ済みでも update-function-configuration で切り替え可能（再デプロイ不要、反映は数十秒）。
 
 aws lambda update-function-configuration \
   --function-name "$APP_NAME" \
@@ -82,56 +101,47 @@ aws lambda update-function-configuration \
   --environment "Variables={
     SLACK_SECRET_NAME=$SLACK_SECRET_NAME,
     REGION=$CDK_DEFAULT_REGION,
-    MASK_IP=true,
-    MASK_ACCESS_KEY=true,
-    MASK_ACCOUNT_ID=true,
-    EMOJI_HUMAN=:inbox_tray:,      # 人間っぽいアクセスのヘッダー絵文字
-    EMOJI_ROBOT=:robot_face:,      # 自動/タスクっぽいアクセス
-    TREAT_CLI_AS_HUMAN=false       # aws-cli/botocore を人扱いにしたい場合は true
+    MASK_IP=true,                # IPv4: /24, IPv6: /64 に丸め表示
+    MASK_ACCESS_KEY=true,        # アクセスキー末尾4桁のみ
+    MASK_ACCOUNT_ID=true,        # アカウントIDを 12***3456 形式にマスク
+    EMOJI_HUMAN=:inbox_tray:,    # 人間っぽいアクセスのヘッダー絵文字
+    EMOJI_ROBOT=:robot_face:,    # 自動/タスクっぽいアクセスの絵文字
+    TREAT_CLI_AS_HUMAN=false     # aws-cli/botocore を人扱いするなら true
   }"
 
-	•	MASK_IP：IPv4は /24、IPv6は /64 に丸めて表示
-	•	MASK_ACCESS_KEY：アクセスキー末尾4桁のみ
-	•	MASK_ACCOUNT_ID：アカウントIDを 12***3456 形式に
-	•	人/ロボ判定は UA・ID種別から推定し、ヘッダーに👤/🤖（Slack絵文字）を出し分け
+	•	誰がDLしたかを重視：ユーザー/セッション名は表示、アカウントIDはマスク推奨
+	•	公開範囲が広いチャンネルではマスク強め、狭い社内チャンネルでは読みやすさ重視…など運用に合わせて
 
 ⸻
 
-トラブルシュート（よくある）
-	•	通知が来ない（Lambda単体もNG）
-→ Secret名/中身（URL）を再チェック：
-aws secretsmanager get-secret-value --secret-id "$SLACK_SECRET_NAME" --region "$CDK_DEFAULT_REGION"
-	•	Lambda単体はOKだが本番経路で来ない
-→ aws cloudtrail get-event-selectors --trail-name ${APP_NAME}-Trail に対象バケットの arn:aws:s3:::bucket/ が入っているか
-→ aws events describe-rule --name "$APP_NAME" --query State が ENABLED か
-→ 直近ログ：aws logs tail /aws/lambda/$APP_NAME --region "$CDK_DEFAULT_REGION" --since 10m
-	•	BUCKET_NAMES 未設定エラー
-→ export BUCKET_NAMES='...' を忘れているか、値が空。
+複数バケット / 複数チャンネル
+	•	バケット追加：BUCKET_NAMES に追記して cdk deploy。専用 Trail の Data Events に自動反映。
+	•	別チャンネルにも通知：別のシークレット名＋別の APP_NAME で同居デプロイ。
+
+# 例：2系統目（Bチャンネル）
+export APP_NAME='GetObjectMonitor-B'
+export SLACK_SECRET_NAME='slack/webhook-security'
+cdk deploy --require-approval never
+
 
 ⸻
 
-片付け
-
-cdk destroy
-aws secretsmanager delete-secret --secret-id "$SLACK_SECRET_NAME" \
-  --region "$CDK_DEFAULT_REGION" --force-delete-without-recovery
-
-CloudTrailログ用のS3バケットが残る場合は、中身を空にしてから再実行。
-
-⸻
-
-アーキ図（Mermaid）
+アーキテクチャ図（Mermaid）
 
 flowchart LR
   subgraph S3["S3 Buckets (BUCKET_NAMES)"]
   end
+
   S3 -- "GetObject (Data Events)" --> CT["CloudTrail\n(APP_NAME-Trail)"]
   CT --> EB["EventBridge Rule\n(APP_NAME)"]
   EB --> L["Lambda\n(APP_NAME)"]
   Secrets["Secrets Manager\n(SLACK_SECRET_NAME)\nWebhook URL 保管"] --> L
   L --> Slack["Slack Incoming Webhook\n(チャンネル通知)"]
 
-リポジトリ構成（GitHub はこのままが👍）
+
+⸻
+
+リポジトリ構成（GitHub はこのままが楽）
 
 s3-getobject-monitor-cdk/
 ├─ bin/                         # CDKエントリ（envを読む）
@@ -146,6 +156,42 @@ s3-getobject-monitor-cdk/
 ├─ .gitignore                   # .env, cdk.out など除外
 └─ README.md
 
-注意（コスト/情報露出）
-	•	S3 Data Events はイベント量課金。対象バケットは必要最小限に。
-	•	通知本文には「Who/UA/AccessKey末尾」等が含まれます。公開範囲に応じてマスクを設定してください。
+ベストプラクティス：GitHub は上記構造を保ち、Qiita からは 図＋ツリー＋コマンド に留めてリンクする。
+
+⸻
+
+トラブルシュート（よくある）
+	•	通知が来ない（Lambda 単体もNG）
+→ aws secretsmanager get-secret-value --secret-id "$SLACK_SECRET_NAME" で Secret 名/URL を確認
+	•	Lambda 単体OKだが本番経路で来ない
+→ aws cloudtrail get-event-selectors --trail-name ${APP_NAME}-Trail に対象バケットが入っているか
+→ aws events describe-rule --name "$APP_NAME" --query State が ENABLED か
+→ 直近ログ：aws logs tail /aws/lambda/$APP_NAME --region "$CDK_DEFAULT_REGION" --since 10m
+	•	BUCKET_NAMES 未設定エラー
+→ export BUCKET_NAMES='...' を設定（スペース/カンマ区切りOK）
+	•	zsh の unset: #: invalid parameter name
+→ 同じ行の末尾にコメントを書かない（unset VAR # comment はNG）
+
+⸻
+
+片付け（削除）
+
+cdk destroy
+aws secretsmanager delete-secret --secret-id "$SLACK_SECRET_NAME" \
+  --region "$CDK_DEFAULT_REGION" --force-delete-without-recovery
+
+CloudTrail ログ保存バケットにオブジェクトが残っていると削除失敗します。
+その場合は aws s3 rm s3://<trail-log-bucket> --recursive で空にしてから再実行。
+
+⸻
+
+免責 / セキュリティ注意
+	•	Data Events のコストに注意。対象を最小限に。
+	•	通知には「ユーザー/セッション名、UA、アクセスキー末尾」などが含まれます。公開範囲に応じてマスク設定を調整してください。
+	•	監査要件に合わせて、イベント保存期間や通知チャンネルのアクセス制御もご検討を。
+
+⸻
+
+参考（次の一手）
+	•	別チャンネル・別環境向けには スタックを複数に分けると運用が楽
+	•	Webhook では送信者アイコンの切替が制限されるため、本格的な見た目カスタムが必要な場合は Slack Bot Token + chat.postMessage への移行を検討
