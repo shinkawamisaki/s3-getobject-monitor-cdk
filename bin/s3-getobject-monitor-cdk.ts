@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Copyright (c) 2025 <Your Name or Org>
+ * Copyright (c) 2025 <shinkawa>
  */
 import * as cdk from 'aws-cdk-lib';
 import { S3GetObjectMonitorStack } from '../lib/s3-getobject-monitor-cdk-stack';
