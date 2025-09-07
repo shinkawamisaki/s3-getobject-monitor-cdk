@@ -227,3 +227,6 @@ If you redistribute, please retain the copyright notice and the LICENSE file.
 ✅ 会社内・商用での利用について  
 本ソフトウェアは **MIT ライセンスの範囲で、社内利用・商用利用・受託案件への組み込みも自由**に行えます。**追加の許諾は不要**です。  
 再配布する場合は、著作権表示と LICENSE ファイルを残してください。
+
+※個人OSS／私物環境での検証。特定組織の情報は含みません。
+
