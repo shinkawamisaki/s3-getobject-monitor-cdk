@@ -1,4 +1,4 @@
-# [CDK] S3 の GetObject を CloudTrail Data Events で検知して Slack 通知する（既存 Trail は触らない）
+# [CDK] S3 の GetObject を CloudTrail Data Events で検知して Slack 通知する（既存 Trail は触らない）v0.1.0
 
 > 監視したい S3 バケットで発生した **GetObject** を **CloudTrail の Data Events** で拾い、**EventBridge → Lambda** で整形して **Slack** に通知します。  
 > 本スタックは **専用 CloudTrail** を自動作成し、**既存の組織/アカウント Trail には一切手を入れません**。
