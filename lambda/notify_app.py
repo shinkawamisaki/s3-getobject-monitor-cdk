@@ -2,7 +2,7 @@
 # Copyright (c) 2025 <shinkawa>
 # lambda/notify_app.py
 import json, os, urllib.parse, urllib.request
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import boto3
 
 # ===== Slack =====
@@ -41,13 +41,13 @@ def _mask_arn_account(arn: str) -> str:
     if not arn or ":" not in arn: return arn or "-"
     if not MASK_ACCOUNT_ID: return arn
     p = arn.split(":")
-    if len(p) >= 5: p[4] = "************"  # ARN内のアカIDは完全伏せ
+    if len(p) >= 5: p[4] = "************"
     return ":".join(p)
 
 def _format_account_id(acct: str) -> str:
     if not acct: return ""
     if not MASK_ACCOUNT_ID: return acct
-    return f"{acct[:2]}***{acct[-4:]}"  # 例: 97***4140
+    return f"{acct[:2]}***{acct[-4:]}"
 
 # ===== Robot / Human 判定 =====
 EMOJI_HUMAN = os.environ.get("EMOJI_HUMAN", ":inbox_tray:")
@@ -75,7 +75,20 @@ def handler(event, context):
     src  = d.get("eventSource") or "s3.amazonaws.com"
     acct = d.get("recipientAccountId") or ""
     acct_disp = _format_account_id(acct)
-    when = d.get("eventTime") or datetime.utcnow().isoformat() + "Z"
+
+    # === JST + UTC ===
+    utc_str = d.get("eventTime")
+    if utc_str:
+        try:
+            utc_dt = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            jst_dt = utc_dt.astimezone(timezone(timedelta(hours=9)))
+            when = f"{jst_dt.strftime('%Y-%m-%d %H:%M:%S JST')} / {utc_dt.strftime('%H:%M:%S UTC')}"
+        except Exception:
+            when = utc_str
+    else:
+        now_jst = datetime.now(timezone(timedelta(hours=9)))
+        now_utc = now_jst.astimezone(timezone.utc)
+        when = f"{now_jst.strftime('%Y-%m-%d %H:%M:%S JST')} / {now_utc.strftime('%H:%M:%S UTC')}"
 
     bucket = req.get("bucketName")
     key = req.get("key") or (req.get("object") or {}).get("key")
